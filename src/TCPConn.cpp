@@ -13,6 +13,7 @@
 #include <crypto++/rijndael.h>
 #include <crypto++/gcm.h>
 #include <crypto++/aes.h>
+#include <cryptopp/hex.h>
 
 using namespace CryptoPP;
 
@@ -177,11 +178,47 @@ void TCPConn::handleConnection() {
             sendSID();
             break;
 
-         // Server: Wait for the SID from a newly-connected client, then send our SID
+         // Server: Wait for the SID from a newly-connected client and send our SID.
          case s_connected:
             waitForSID();
             break;
    
+         //Server: Challenge the client
+         case s_challenge:
+            sendChallenge();
+             _status = s_authenticate; //Wait for a response
+            break;
+
+         //Server: wait for client response
+         case s_authenticate:
+            if(waitForChallengeResponse())
+            {
+               waitForChallenge();
+               _status = s_datarx;
+            }
+            break;
+
+         //Client, wait for challenge.
+         case c_waitforchallenge:
+            //Record server SID
+            waitForSIDClient();
+            waitForChallenge();
+            break;
+
+         //Client, challenge the server
+         case c_challenge:
+            sendChallenge();
+            _status = c_authenticate;
+            break;
+
+         //Client, wait for server response
+         case c_authenticate:
+            if(waitForChallengeResponse())
+            {
+               _status = s_datatx;
+            }
+         break;
+
          // Client: connecting user - replicate data
          case s_datatx:
             transmitData();
@@ -224,7 +261,101 @@ void TCPConn::sendSID() {
    wrapCmd(buf, c_sid, c_endsid);
    sendData(buf);
 
-   _status = s_datatx; 
+   //_status = s_datatx;
+
+   //Client waits for challenge from server.
+   _status = c_waitforchallenge;
+}
+
+void TCPConn::sendChallenge()
+{
+   //Make up a random string
+   challenge = generateChallengeString();
+
+   //Encrypt the string with our shared key
+   //std::vector<uint8_t> encrypted_challenge(challenge.begin(), challenge.end());
+   //encryptData(encrypted_challenge);
+
+   //Send the string
+   //wrapCmd(encrypted_challenge, c_sid, c_endsid);
+   //sendData(challenge);
+   sendData(challenge);
+
+   // //Wait for a response
+    //_status = c_authenticate;
+
+}
+
+void TCPConn::waitForChallenge()
+{
+   if(_connfd.hasData())
+   {
+      std::vector<uint8_t> buf; //Buffer to hold our data
+      //If there's no data to get, return and keep waiting.
+      if(!getData(buf)) return; 
+
+      // //If the data we get is in an invalid format, disconnect and return.
+      // if (!getCmdData(buf, c_sid, c_endsid))
+      //  {
+      //    std::stringstream msg;
+      //    msg << "Challenge string from connecting client invalid format. Cannot authenticate.";
+      //    _server_log.writeLog(msg.str().c_str());
+      //    disconnect();
+      //    return;
+      // }
+
+      //Encrypt the string and send it back
+      sendEncryptedData(buf);
+
+      //Send our own challenge
+      // sendChallenge();
+      //_status = c_challenge;
+      return;
+   
+   }
+}
+
+bool TCPConn::waitForChallengeResponse()
+{
+   if(_connfd.hasData())
+   {
+      std::vector<uint8_t> buf; //Buffer to hold our data
+      //If there's no data to get, return and keep waiting.
+      if(!getData(buf)) return false; 
+
+      //Decrypt our response
+      decryptData(buf);
+
+      //If the data we get is in an invalid format, disconnect and return.
+      // if (!getCmdData(buf, c_sid, c_endsid))
+      //  {
+      //    std::stringstream msg;
+      //    msg << "Challenge string from connecting client invalid format. Cannot authenticate.";
+      //    _server_log.writeLog(msg.str().c_str());
+      //    disconnect();
+      //    return false;
+      // }
+
+      //See if it matches our response
+      //If they fail the challenge, reject the connection.
+      if(buf != challenge)
+      {
+         std::stringstream msg;
+         msg << "Bad challenge response. Cannot authenticate.";
+         _server_log.writeLog(msg.str().c_str());
+         disconnect();
+         return false;
+      }
+      else //Else, accept the connection.
+      {
+         return true;
+         //_status = s_datarx;
+      }
+
+      
+
+
+   }
 }
 
 /**********************************************************************************************
@@ -233,7 +364,8 @@ void TCPConn::sendSID() {
  *    Throws: socket_error for network issues, runtime_error for unrecoverable issues
  **********************************************************************************************/
 
-void TCPConn::waitForSID() {
+void TCPConn::waitForSID()
+{
 
    // If data on the socket, should be our Auth string from our host server
    if (_connfd.hasData()) {
@@ -258,21 +390,22 @@ void TCPConn::waitForSID() {
       wrapCmd(buf, c_sid, c_endsid);
       sendData(buf);
 
-      _status = s_datarx;
+      //_status = s_datarx;
+      //Send challenge
+      _status = s_challenge;
    }
 }
 
-
 /**********************************************************************************************
- * transmitData()  - receives the SID from the server and transmits data
+ * waitForSIDClient()  - receives the SID from the server and records it for the client
  *
  *    Throws: socket_error for network issues, runtime_error for unrecoverable issues
  **********************************************************************************************/
-
-void TCPConn::transmitData() {
-
-   // If data on the socket, should be our Auth string from our host server
-   if (_connfd.hasData()) {
+void TCPConn::waitForSIDClient()
+{
+   
+   if (_connfd.hasData())
+   {
       std::vector<uint8_t> buf;
 
       if (!getData(buf))
@@ -288,9 +421,38 @@ void TCPConn::transmitData() {
 
       std::string node(buf.begin(), buf.end());
       setNodeID(node.c_str());
+   }
+}
+
+
+/**********************************************************************************************
+ * transmitData()  - receives the SID from the server and transmits data
+ *
+ *    Throws: socket_error for network issues, runtime_error for unrecoverable issues
+ **********************************************************************************************/
+
+void TCPConn::transmitData() {
+
+   // If data on the socket, should be our Auth string from our host server
+   // if (_connfd.hasData()) {
+   //    std::vector<uint8_t> buf;
+
+   //    if (!getData(buf))
+   //       return;
+
+   //    if (!getCmdData(buf, c_sid, c_endsid)) {
+   //       std::stringstream msg;
+   //       msg << "SID string from connected server invalid format. Cannot authenticate.";
+   //       _server_log.writeLog(msg.str().c_str());
+   //       disconnect();
+   //       return;
+   //    }
+
+   //    std::string node(buf.begin(), buf.end());
+   //    setNodeID(node.c_str());
 
       // Send the replication data
-      sendData(_outputbuf);
+      sendEncryptedData(_outputbuf);
 
       if (_verbosity >= 3)
          std::cout << "Successfully authenticated connection with " << getNodeID() <<
@@ -298,7 +460,7 @@ void TCPConn::transmitData() {
 
       // Wait for their response
       _status = s_waitack;
-   }
+
 }
 
 
@@ -318,6 +480,8 @@ void TCPConn::waitForData() {
       if (!getData(buf))
          return;
 
+      decryptData(buf);
+
       if (!getCmdData(buf, c_rep, c_endrep)) {
          std::stringstream msg;
          msg << "Replication data possibly corrupted from" << getNodeID() << "\n";
@@ -328,10 +492,11 @@ void TCPConn::waitForData() {
 
       // Got the data, save it
       _inputbuf = buf;
+      //Decrypt data
       _data_ready = true;
 
       // Send the acknowledgement and disconnect
-      sendData(c_ack);
+      sendEncryptedData(c_ack);
 
       if (_verbosity >= 2)
          std::cout << "Successfully received replication data from " << getNodeID() << "\n";
@@ -357,6 +522,9 @@ void TCPConn::awaitAck() {
 
       if (!getData(buf))
          return;
+
+      //Decrypt buff
+      decryptData(buf);
 
       if (findCmd(buf, c_ack) == buf.end())
       {
@@ -620,5 +788,24 @@ bool TCPConn::isConnected() {
 const char *TCPConn::getIPAddrStr(std::string &buf) {
    _connfd.getIPAddrStr(buf);
    return buf.c_str();
+}
+
+std::vector<uint8_t> TCPConn::generateChallengeString()
+{
+      std::string challenge_string;
+
+      //Generating a random output using Crypto++'s library and examples
+      SecByteBlock key(32); //Save a block of memory for our random value/string
+      OS_GenerateRandomBlock(false, key, key.size()); //Have the OS generate a random block, save it in key
+      
+      HexEncoder encoder(new StringSink(challenge_string)); //Create an encoder to encode our key, save it in our challenge string
+      encoder.Put(key, key.size()); //Encode our key and put it in challenge_string
+      encoder.MessageEnd(); //Finish encoding
+
+      //Convert string to vector of chars to make this easier to implement in other functions (everything else here uses vectors)
+      std::vector<uint8_t> vec(challenge_string.begin(), challenge_string.end());
+
+      //Return our vector
+      return vec;
 }
 
