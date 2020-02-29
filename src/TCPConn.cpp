@@ -13,7 +13,6 @@
 #include <crypto++/rijndael.h>
 #include <crypto++/gcm.h>
 #include <crypto++/aes.h>
-#include <crypto++/hex.h>
 
 using namespace CryptoPP;
 
@@ -171,124 +170,40 @@ void TCPConn::encryptData(std::vector<uint8_t> &buf) {
 void TCPConn::handleConnection() {
 
    try {
-      // switch (_status) {
+      switch (_status) {
 
-      //    // CLIENT: Just connected, send our SID
-      //    case s_connecting:
-      //       sendSID();
-      //       break;
-
-      //    //SERVER: Wait for the SID from a newly-connected client, then send our SID
-      //    case s_connected:
-      //       waitForSID();
-      //       break;
-   
-      //    // Client: connecting user - replicate data
-      //    case s_datatx:
-      //       transmitData();
-      //       break;
-
-      //    // Server: Receive data from the client
-      //    case s_datarx:
-      //       waitForData();
-      //       break;
-   
-      //    // Client: Wait for acknowledgement that data sent was received before disconnecting
-      //    case s_waitack:
-      //       awaitAck();
-      //       break;
-         
-      //    // Server: Data received and conn disconnected, but waiting for the data to be retrieved
-      //    case s_hasdata:
-      //       break;
-
-      //    default:
-      //       throw std::runtime_error("Invalid connection status!");
-      //       break;
-      // }
-      switch(_status)
-      {
-         //CLIENT: Just connected, send SID
+         // Client: Just connected, send our SID
          case s_connecting:
-            _status = c_sendClientSID;
-         case c_sendClientSID:
             sendSID();
-            _status = c_waitForServerSID;
             break;
 
-         //SERVER: Just connected, wait for client SID (and send server SID when recieved)
+         // Server: Wait for the SID from a newly-connected client, then send our SID
          case s_connected:
-            _status = s_waitForClientSID;
-         case s_waitForClientSID:
             waitForSID();
-            sendSID();
-            _status = s_ChallengeClient;
             break;
-
-         //CLIENT: Wait for SID from server
-         case c_waitForServerSID:
-            waitForSID();
-            _status = c_waitForChallengeFromServer;
-            break;
-
-         //SERVER: Challenge client
-         case s_ChallengeClient:
-            sendChallenge();
-            _status = s_waitForResponseFromClient;
-            break;
-
-         //CLIENT: Wait for server challenge (and send response)
-         case c_waitForChallengeFromServer:
-            waitForChallenge();
-            _status = c_ChallengeServer;
-            break;
-
-         //SERVER: Wait for client response
-         case s_waitForResponseFromClient:
-            waitForChallengeResponse();
-            _status = s_waitForChallengeFromClient;
-            break;
-
-         //CLIENT: Send challenge to server
-         case c_ChallengeServer:
-            sendChallenge();
-            _status = c_waitForResponseFromServer;
-            break;
-
-         //SERVER: Wait for client challenge (and send response)
-         case s_waitForChallengeFromClient:
-            waitForChallenge();
-            _status = s_waitForDataFromClient;
-            break;
-
-         //CLIENT: Wait for server response
-         case c_waitForResponseFromServer:
-            waitForChallengeResponse();
-            _status = c_sendDataToServer;
-            break;
-
-         //CLIENT: Send replication data
-         case c_sendDataToServer:
+   
+         // Client: connecting user - replicate data
+         case s_datatx:
             transmitData();
-            _status = c_waitForAckFromServer;
             break;
 
-         //SERVER: Recieve data (and send acknowledgement, then D/C)
-         case s_waitForDataFromClient:
+         // Server: Receive data from the client
+         case s_datarx:
             waitForData();
-            _status = s_hasdata;
             break;
-
-         //CLIENT: Wait for acknowledgement (then D/C)
-         case c_waitForAckFromServer:
+   
+         // Client: Wait for acknowledgement that data sent was received before disconnecting
+         case s_waitack:
             awaitAck();
+            break;
+         
+         // Server: Data received and conn disconnected, but waiting for the data to be retrieved
+         case s_hasdata:
             break;
 
          default:
             throw std::runtime_error("Invalid connection status!");
             break;
-
-
       }
    } catch (socket_error &e) {
       std::cout << "Socket error, disconnecting.\n";
@@ -309,7 +224,7 @@ void TCPConn::sendSID() {
    wrapCmd(buf, c_sid, c_endsid);
    sendData(buf);
 
-   //_status = s_datatx; 
+   _status = s_datatx; 
 }
 
 /**********************************************************************************************
@@ -329,7 +244,7 @@ void TCPConn::waitForSID() {
 
       if (!getCmdData(buf, c_sid, c_endsid)) {
          std::stringstream msg;
-         msg << "SID string from connection invalid format. Cannot authenticate.";
+         msg << "SID string from connecting client invalid format. Cannot authenticate.";
          _server_log.writeLog(msg.str().c_str());
          disconnect();
          return;
@@ -343,7 +258,7 @@ void TCPConn::waitForSID() {
       wrapCmd(buf, c_sid, c_endsid);
       sendData(buf);
 
-      //_status = s_datarx;
+      _status = s_datarx;
    }
 }
 
@@ -382,7 +297,7 @@ void TCPConn::transmitData() {
                       " and sending replication data.\n";
 
       // Wait for their response
-      //_status = s_waitack;
+      _status = s_waitack;
    }
 }
 
@@ -423,7 +338,7 @@ void TCPConn::waitForData() {
 
 
       disconnect();
-      //_status = s_hasdata;
+      _status = s_hasdata;
    }
 }
 
@@ -584,7 +499,7 @@ bool TCPConn::getCmdData(std::vector<uint8_t> &buf, std::vector<uint8_t> &startc
    auto start = findCmd(temp, startcmd);
    auto end = findCmd(temp, endcmd);
 
-   if ((start == temp.end()) || (end == temp.end()))
+   if ((start == temp.end()) || (end == temp.end()) || (start == end))
       return false;
 
    buf.assign(start + startcmd.size(), end);
@@ -625,7 +540,7 @@ void TCPConn::getInputData(std::vector<uint8_t> &buf) {
    buf = _inputbuf;
 
    _data_ready = false;
-  // _status = s_none;
+   _status = s_none;
 }
 
 /**********************************************************************************************
@@ -640,7 +555,7 @@ void TCPConn::getInputData(std::vector<uint8_t> &buf) {
 void TCPConn::connect(const char *ip_addr, unsigned short port) {
 
    // Set the status to connecting
-   //_status = s_connecting;
+   _status = s_connecting;
 
    // Try to connect
    if (!_connfd.connectTo(ip_addr, port))
@@ -652,7 +567,7 @@ void TCPConn::connect(const char *ip_addr, unsigned short port) {
 // Same as above, but ip_addr and port are in network (big endian) format
 void TCPConn::connect(unsigned long ip_addr, unsigned short port) {
    // Set the status to connecting
-   //_status = s_connecting;
+   _status = s_connecting;
 
    if (!_connfd.connectTo(ip_addr, port))
       throw socket_error("TCP Connection failed!");
@@ -705,24 +620,5 @@ bool TCPConn::isConnected() {
 const char *TCPConn::getIPAddrStr(std::string &buf) {
    _connfd.getIPAddrStr(buf);
    return buf.c_str();
-}
-
-std::vector<uint8_t> TCPConn::generateChallengeString()
-{
-      std::string challenge_string;
-
-      //Generating a random output using Crypto++'s library and examples
-      SecByteBlock key(32); //Save a block of memory for our random value/string
-      OS_GenerateRandomBlock(false, key, key.size()); //Have the OS generate a random block, save it in key
-      
-      HexEncoder encoder(new StringSink(challenge_string)); //Create an encoder to encode our key, save it in our challenge string
-      encoder.Put(key, key.size()); //Encode our key and put it in challenge_string
-      encoder.MessageEnd(); //Finish encoding
-
-      //Convert string to vector of chars to make this easier to implement in other functions (everything else here uses vectors)
-      std::vector<uint8_t> vec(challenge_string.begin(), challenge_string.end());
-
-      //Return our vector
-      return vec;
 }
 

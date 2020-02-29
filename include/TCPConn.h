@@ -16,27 +16,27 @@ public:
    ~TCPConn();
 
    // The current status of the connection
-   //enum statustype { s_none, s_connecting, s_connected, s_datatx, s_datarx, s_waitack, s_hasdata };
+   enum statustype { s_none, s_connecting, s_connected, s_datatx, s_datarx, s_waitack, s_hasdata };
    //enum statustype { s_none, s_connecting, s_connected, s_datatx, s_datarx, s_waitack, s_hasdata, s_challenge, c_waitforchallenge, s_response, s_authenticate, c_challenge, c_authenticate};
 
-   enum statustype {
-      s_none,
-      s_connecting,
-      s_connected,
-      c_sendClientSID,
-      s_waitForClientSID, 
-      c_waitForServerSID,
-      s_ChallengeClient,
-      c_waitForChallengeFromServer,
-      s_waitForResponseFromClient,
-      c_ChallengeServer,
-      s_waitForChallengeFromClient,
-      c_waitForResponseFromServer,
-      c_sendDataToServer,
-      s_waitForDataFromClient,
-      s_hasdata,
-      c_waitForAckFromServer
-   };
+   // enum statustype {
+   //    s_none,
+   //    s_connecting,
+   //    s_connected,
+   //    c_sendClientSID,
+   //    s_waitForClientSID, 
+   //    c_waitForServerSID,
+   //    s_ChallengeClient,
+   //    c_waitForChallengeFromServer,
+   //    s_waitForResponseFromClient,
+   //    c_ChallengeServer,
+   //    s_waitForChallengeFromClient,
+   //    c_waitForResponseFromServer,
+   //    c_sendDataToServer,
+   //    s_waitForDataFromClient,
+   //    s_hasdata,
+   //    c_waitForAckFromServer
+   // };
 
    statustype getStatus() { return _status; };
 
