@@ -54,6 +54,9 @@ private:
    // System clock time of when the server started
    time_t _start_time;
 
+   // Expected maximum deviation between our clock and the clocks of other servers
+   float _max_clock_deviation = 3.0;
+
    // When the last replication happened so we can know when to do another one
    time_t _last_repl;
 

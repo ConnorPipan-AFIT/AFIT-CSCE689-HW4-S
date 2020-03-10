@@ -16,7 +16,22 @@ public:
    ~TCPConn();
 
    // The current status of the connection
-   enum statustype { s_none, s_connecting, s_connected, s_datatx, s_datarx, s_waitack, s_hasdata };
+   //enum statustype { s_none, s_connecting, s_connected, s_datatx, s_datarx, s_waitack, s_hasdata };
+   enum statustype 
+      { s_none, 
+      s_connecting, 
+      s_connected, 
+      s_datatx, 
+      s_datarx, 
+      s_waitack, 
+      s_hasdata,
+      c_waitforchallenge,
+      s_waitForResponse,
+      c_sendChallenge,
+      s_waitForChallenge,
+      c_waitForResponse,
+      c_waitForSID
+      };
 
    statustype getStatus() { return _status; };
 
@@ -71,10 +86,18 @@ public:
 protected:
    // Functions to execute various stages of a connection 
    void sendSID();
-   void waitForSID();
+   bool waitForSID();
+   //void waitForSID();
    void transmitData();
    void waitForData();
    void awaitAck();
+
+   bool waitForChallenge();
+   void sendChallenge();
+   bool waitForResponse();
+
+   std::vector<uint8_t> challenge;
+   std::vector<uint8_t> generateChallengeString();
 
    // Looks for commands in the data stream
    std::vector<uint8_t>::iterator findCmd(std::vector<uint8_t> &buf,

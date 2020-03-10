@@ -13,6 +13,7 @@
 #include <crypto++/rijndael.h>
 #include <crypto++/gcm.h>
 #include <crypto++/aes.h>
+#include <crypto++/hex.h>
 
 using namespace CryptoPP;
 
@@ -170,37 +171,100 @@ void TCPConn::encryptData(std::vector<uint8_t> &buf) {
 void TCPConn::handleConnection() {
 
    try {
-      switch (_status) {
 
-         // Client: Just connected, send our SID
+      switch(_status)
+      {
+         //CLIENT: I've just connected. Send my SID- this is my identity and indicates I want to set up a connection.
          case s_connecting:
+            //std::cout << "CLIENT: Sending SID\n";
             sendSID();
+            _status = c_waitForSID;
             break;
 
-         // Server: Wait for the SID from a newly-connected client, then send our SID
+         //SERVER: A client has connected. Wait to recieve their SID, send them our SID, then send them a challenge.
          case s_connected:
-            waitForSID();
+           //std::cout << "SERVER: Waiting for SID\n";
+            if(waitForSID())
+            {
+               //std::cout << "SERVER: Sending SID to " << getNodeID() <<"\n";
+               sendSID();
+               //usleep(1000);
+               //std::cout << "SERVER: Sending Challenge to " << getNodeID() <<"\n";
+               sendChallenge();
+               _status = s_waitForResponse;
+            }
             break;
-   
-         // Client: connecting user - replicate data
+
+         //CLIENT: Wait for SID from server
+         case c_waitForSID:
+            //std::cout << "CLIENT: Waiting for SID from Server\n";
+            if(waitForSID())
+            {
+               //std::cout << "CLIENT: Recieved SID from server " << getNodeID() <<", waiting for challenge.\n";
+               //SID recieved, wait for challenge.
+               _status = c_waitforchallenge;
+            }
+            break;
+
+         //CLIENT: Wait for challenge from server, then send response.
+         case c_waitforchallenge:
+            //std::cout << "CLIENT: Waiting for challenge from " << getNodeID() << "\n";
+            if(waitForChallenge()) {_status = c_sendChallenge;}
+            break;
+
+         //SERVER: Challenge sent, wait for response.
+         case s_waitForResponse:
+            //std::cout << "SERVER: Waiting for challenge response from " << getNodeID() << "\n";
+            if(waitForResponse()) {_status = s_waitForChallenge;}
+            break;
+
+         //CLIENT: Response sent, send challenge.
+         case c_sendChallenge:
+            //std::cout << "CLIENT: Sending challenge to " << getNodeID() << "\n";
+           //usleep(1000);
+            sendChallenge();
+            _status = c_waitForResponse;
+            break;
+
+         //SERVER: Response recieved, wait for challenge (then send response)
+         case s_waitForChallenge:
+            //std::cout << "SERVER: Waiting for challenge from client " << getNodeID() << "\n";
+            if(waitForChallenge()) {_status = s_datarx;}
+            break;
+
+         //CLIENT: Wait for challenge response
+         case c_waitForResponse:
+            //std::cout << "CLIENT: Waiting for challenge response from server " << getNodeID() << "\n";
+            if(waitForResponse()) {_status = s_datatx;}
+            break;
+
+         //CLIENT: Response recieved, send data.
          case s_datatx:
+            //std::cout << "CLIENT: Response recieved, transmitting data to " << getNodeID() << "\n";
+            //usleep(1000);
+            //std::cout << "\n----Transmitting data-----\n";
             transmitData();
             break;
 
-         // Server: Receive data from the client
+         //SERVER: Wait for data from client (then send ack and disconnect)
          case s_datarx:
+            //std::cout << "SERVER: Waiting for data from client " << getNodeID() << "\n";
             waitForData();
             break;
-   
-         // Client: Wait for acknowledgement that data sent was received before disconnecting
+
+         //CLIENT: Wait for ack that data was recieved, then disconnect
          case s_waitack:
+            //std::cout << "CLIENT: Waiting for ACK from server " << getNodeID() << "\n";
             awaitAck();
             break;
-         
-         // Server: Data received and conn disconnected, but waiting for the data to be retrieved
+
+         // SERVER Data received and conn disconnected, but waiting for the data to be retrieved
          case s_hasdata:
+            //std::cout << "SERVER: Data recieved and disconnected from " << getNodeID() << "\n";
+            //std::cout << "\n----SERVER HAS DATA----\n";
             break;
 
+         //Default/invalid status
          default:
             throw std::runtime_error("Invalid connection status!");
             break;
@@ -223,8 +287,6 @@ void TCPConn::sendSID() {
    std::vector<uint8_t> buf(_svr_id.begin(), _svr_id.end());
    wrapCmd(buf, c_sid, c_endsid);
    sendData(buf);
-
-   _status = s_datatx; 
 }
 
 /**********************************************************************************************
@@ -233,64 +295,47 @@ void TCPConn::sendSID() {
  *    Throws: socket_error for network issues, runtime_error for unrecoverable issues
  **********************************************************************************************/
 
-void TCPConn::waitForSID() {
+bool TCPConn::waitForSID() {
 
    // If data on the socket, should be our Auth string from our host server
    if (_connfd.hasData()) {
       std::vector<uint8_t> buf;
 
       if (!getData(buf))
-         return;
+         return false;
+
 
       if (!getCmdData(buf, c_sid, c_endsid)) {
          std::stringstream msg;
          msg << "SID string from connecting client invalid format. Cannot authenticate.";
+         //msg << "(" << std::string(buf.begin(), buf.end()) << ")\n";
          _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
          disconnect();
-         return;
+         return false;
       }
+
 
       std::string node(buf.begin(), buf.end());
       setNodeID(node.c_str());
 
-      // Send our Node ID
-      buf.assign(_svr_id.begin(), _svr_id.end());
-      wrapCmd(buf, c_sid, c_endsid);
-      sendData(buf);
-
-      _status = s_datarx;
+      return true;
    }
+   return false;
 }
 
 
 /**********************************************************************************************
- * transmitData()  - receives the SID from the server and transmits data
+ * transmitData()  - Transmits data from client to server.
  *
  *    Throws: socket_error for network issues, runtime_error for unrecoverable issues
  **********************************************************************************************/
 
 void TCPConn::transmitData() {
 
-   // If data on the socket, should be our Auth string from our host server
-   if (_connfd.hasData()) {
-      std::vector<uint8_t> buf;
-
-      if (!getData(buf))
-         return;
-
-      if (!getCmdData(buf, c_sid, c_endsid)) {
-         std::stringstream msg;
-         msg << "SID string from connected server invalid format. Cannot authenticate.";
-         _server_log.writeLog(msg.str().c_str());
-         disconnect();
-         return;
-      }
-
-      std::string node(buf.begin(), buf.end());
-      setNodeID(node.c_str());
-
-      // Send the replication data
-      sendData(_outputbuf);
+   
+      sendEncryptedData(_outputbuf);
+      //sendData(_outputbuf);
 
       if (_verbosity >= 3)
          std::cout << "Successfully authenticated connection with " << getNodeID() <<
@@ -298,7 +343,12 @@ void TCPConn::transmitData() {
 
       // Wait for their response
       _status = s_waitack;
-   }
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Transmitted data. Awaiting response.";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
+   
 }
 
 
@@ -315,23 +365,31 @@ void TCPConn::waitForData() {
    if (_connfd.hasData()) {
       std::vector<uint8_t> buf;
 
-      if (!getData(buf))
+      if (!getEncryptedData(buf))
          return;
+
+   
+      //decryptData(buf);
+      //std::string debugStr(buf.begin(), buf.end());
 
       if (!getCmdData(buf, c_rep, c_endrep)) {
          std::stringstream msg;
          msg << "Replication data possibly corrupted from" << getNodeID() << "\n";
          _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
+
          disconnect();
          return;
       }
 
       // Got the data, save it
+      _inputbuf.clear();
       _inputbuf = buf;
       _data_ready = true;
 
       // Send the acknowledgement and disconnect
-      sendData(c_ack);
+      sendEncryptedData(c_ack);
+      //sendData(c_ack);
 
       if (_verbosity >= 2)
          std::cout << "Successfully received replication data from " << getNodeID() << "\n";
@@ -339,6 +397,15 @@ void TCPConn::waitForData() {
 
       disconnect();
       _status = s_hasdata;
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Data recieved, disconnecting.";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
+   }
+   else
+   {
+      _data_ready = false;
    }
 }
 
@@ -355,18 +422,28 @@ void TCPConn::awaitAck() {
    if (_connfd.hasData()) {
       std::vector<uint8_t> buf;
 
-      if (!getData(buf))
+      if (!getEncryptedData(buf))
          return;
 
+      //decryptData(buf);
+      std::string debugStr(buf.begin(), buf.end());
+      
       if (findCmd(buf, c_ack) == buf.end())
       {
          std::stringstream msg;
-         msg << "Awk expected from data send, received something else. Node:" << getNodeID() << "\n";
+         msg << "Ack expected from data send, received something else. Node:" << getNodeID() << "\n";
+         //msg << "(" << std::string(buf.begin(), buf.end()) << ")\n";
          _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
       }
   
       if (_verbosity >= 3)
-         std::cout << "Data ack received from " << getNodeID() << ". Disconnecting.\n";
+         std::cout << "Ack received from " << getNodeID() << ". Disconnecting.\n";
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Recieved ACK";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
 
  
       disconnect();
@@ -390,27 +467,38 @@ bool TCPConn::getData(std::vector<uint8_t> &buf) {
    size_t count = 0;
 
    buf.clear();
+  // std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Clearing passed in buffer.\n";
 
    while (_connfd.hasData()) {
       // read the data on the socket up to 1024
+      //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Reading data on socket.\n";
       count += _connfd.readBytes<uint8_t>(readbuf, 1024);
 
       // check if we lost connection
       if (readbuf.size() == 0) {
+        // std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Connection lost.\n";
          std::stringstream msg;
          std::string ip_addr;
          msg << "Connection from server " << _node_id << " lost (IP: " << 
                                                          getIPAddrStr(ip_addr) << ")"; 
          _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
          disconnect();
          return false;
       }
 
+      //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Inserting read values into buffer\n";
       buf.insert(buf.end(), readbuf.begin(), readbuf.end());
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Recieved data.";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
 
       // concat the data onto anything we've read before
 //      _inputbuf.insert(_inputbuf.end(), readbuf.begin(), readbuf.end());
    }
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "No more data on _connFD\n";
    return true;
 }
 
@@ -422,21 +510,30 @@ bool TCPConn::getData(std::vector<uint8_t> &buf) {
  *
  **********************************************************************************************/
 void TCPConn::decryptData(std::vector<uint8_t> &buf) {
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Initialize SecByteBlock vector.\n";
    // For the initialization vector
    SecByteBlock init_vector(iv_size);
 
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Copy the IV from the incoming stream of data\n";
    // Copy the IV from the incoming stream of data
+    //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Assign buf data to init vector\n";
    init_vector.Assign(buf.data(), iv_size);
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Erase the buffer from the beginning to however big iv-size is (16)\n";
+
+   if(buf.size() < iv_size) buf.resize(iv_size + 1);
    buf.erase(buf.begin(), buf.begin() + iv_size);
 
+    //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Decrypt the data\n";
    // Decrypt the data
    CFB_Mode<AES>::Decryption decryptor;
    decryptor.SetKeyWithIV(_aes_key, _aes_key.size(), init_vector);
 
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Recover data\n";
    std::string recovered;
    ArraySource as(buf.data(), buf.size(), true,
             new StreamTransformationFilter(decryptor, new StringSink(recovered)));
 
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Assign data to buffera\n";
    buf.assign(recovered.begin(), recovered.end());
 
 }
@@ -454,11 +551,16 @@ void TCPConn::decryptData(std::vector<uint8_t> &buf) {
  **********************************************************************************************/
 
 bool TCPConn::getEncryptedData(std::vector<uint8_t> &buf) {
+   //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Attempting to read encrypted data.\n";
    // Get the data from the socket
    if (!getData(buf))
+   {
+      //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "getData returns false.\n";
       return false;
+   }
 
    decryptData(buf);
+  // std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << "Buffer has been decrypted.\n";
 
    return true; 
 }
@@ -600,6 +702,7 @@ void TCPConn::assignOutgoingData(std::vector<uint8_t> &data) {
 void TCPConn::disconnect() {
    _connfd.closeFD();
    _connected = false;
+   _status = s_none;
 }
 
 
@@ -622,3 +725,147 @@ const char *TCPConn::getIPAddrStr(std::string &buf) {
    return buf.c_str();
 }
 
+
+/**********************************************************************************************
+ * sendChallenge - Sends a challenge to the connected entity.
+ * 
+ * Challenges are randomly-generated strings, wrapped in c_auth <AUT></AUT> tags. The challenge
+ * is sent in plaintext. The recieving entity is supposed to take that string, encrypt it, and send
+ * it back in response to prove it has the correct shared key.
+ *
+ **********************************************************************************************/
+void TCPConn::sendChallenge()
+{
+   //Generate a challenge string
+   std::vector<uint8_t> challenge_str = generateChallengeString();
+   challenge = challenge_str;
+   //Wrap it
+   wrapCmd(challenge_str, c_auth, c_endauth);
+   //Send it out
+   sendData(challenge_str);
+
+   
+
+}
+
+/**********************************************************************************************
+ * waitForChallenge - Waits for a challenge to be send by the connected entity. Returns 
+ * true if recieved, false if not.
+ * 
+ * For reason that are beyond me, we never actually seem to flow into the main body of this function.
+ * From debugging I can tell we're sending our challenges, but it seems like _connfd.hasData() is always returning
+ * false despite that. As a result, we end up waiting forever for a challenge to reach us.
+ * 
+ * This is the exact same method the unaltered code uses to determine if data is available to be read.
+ * I can't think of a logical reason we wouldn't flow into this function when I know we have data on the line.
+ *
+ **********************************************************************************************/
+bool TCPConn::waitForChallenge()
+{
+    if (_connfd.hasData()) {
+      std::vector<uint8_t> buf;
+      if (!getData(buf)) {return false;}
+
+      if (!getCmdData(buf, c_auth, c_endauth)) {
+         std::stringstream msg;
+         msg << "Challenge recieved in invalid format. Cannot authenticate.";
+         _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
+         disconnect();
+         return false;
+      }
+
+
+      //Challenge recieved. Send back encrypted response.
+      std::vector<uint8_t> response = buf;
+      wrapCmd(response, c_auth, c_endauth);
+      encryptData(response);
+      sendData(response);
+      //sendEncryptedData(response);
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Challenge recieved.";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
+
+      return true;
+   }
+   return false;
+}
+
+/**********************************************************************************************
+ * waitForResponse - Waits for a challenge response to be sent by the connected entity. 
+ * Returns true if the challenge response has been recieved and passes, false if not.
+ * 
+ * As mentioned above, for some reason _connfd.hasData() is always returning false, when it shouldn't.
+ * This means that the body of waitForChallenge() never executes, so challenge responses don't get sent.
+ * Since the server and client appear to never receive a challenge, their respective clients/servers never
+ * send a response. As a result, this function is never executed. 
+ **********************************************************************************************/
+bool TCPConn::waitForResponse()
+{
+   if (_connfd.hasData()) {
+      std::vector<uint8_t> buf;
+
+      if (!getData(buf)) {return false;}
+      decryptData(buf);
+
+      if (!getCmdData(buf, c_auth, c_endauth)) {
+         std::stringstream msg;
+         msg << "Challenge response received " << std::string(buf.begin(), buf.end()) << " is invalid. Cannot authenticate.";
+         _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
+         disconnect();
+         return false;
+      }
+
+      if(buf != challenge)
+      {
+         std::stringstream msg;
+         msg << "Decrypted challenge response " << std::string(buf.begin(), buf.end()) << " does not match sent challenge " << std::string(challenge.begin(), challenge.end()) << "\n";
+         _server_log.writeLog(msg.str().c_str());
+         std::cout << msg.str() << "\n";
+         disconnect();
+         return false;
+      }
+
+      // std::stringstream msg;
+      // msg << _svr_id << ": Successful challenge response.";
+      // _server_log.writeLog(msg.str().c_str());
+      // std::cout << msg.str() << "\n";
+      //std::cout << __FUNCTION__ << "(" << __LINE__ << "): " << " buffer matches to challenge string.\n";
+
+      return true;
+   }
+   return false;
+
+}
+
+/**********************************************************************************************
+ * generateChallengeString- Generates a randomly-generated  string (well, a vector of chars/uint8's)
+ * for use in challenges.
+ * Returns an std::vector<uint8_t> with random data.
+ *
+ **********************************************************************************************/
+std::vector<uint8_t> TCPConn::generateChallengeString()
+{
+      std::string challenge_string;
+
+      //Generating a random output using Crypto++'s library and examples
+      SecByteBlock key(32); //Save a block of memory for our random value/string
+      OS_GenerateRandomBlock(false, key, key.size()); //Have the OS generate a random block, save it in key
+      
+      HexEncoder encoder(new StringSink(challenge_string)); //Create an encoder to encode our key, save it in our challenge string
+      encoder.Put(key, key.size()); //Encode our key and put it in challenge_string
+      encoder.MessageEnd(); //Finish encoding
+
+      //Convert string to vector of chars to make this easier to implement in other functions (everything else here uses vectors)
+      std::vector<uint8_t> vec(challenge_string.begin(), challenge_string.end());
+
+      //Let's shorten the vector to make sure we're not cutting it off when sending it
+      vec.resize(16);
+
+      //std::cout << "Generating challenge string " << std::string(vec.begin(), vec.end()) << "\n";
+      //Return our vector
+      return vec;
+}

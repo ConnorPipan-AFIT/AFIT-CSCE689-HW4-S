@@ -108,8 +108,9 @@ void ReplServer::replicate() {
 
          // Incoming replication--add it to this server's local database
          addReplDronePlots(data);         
-      }       
+      } 
 
+      
       usleep(1000);
    }   
 }
@@ -180,6 +181,25 @@ unsigned int ReplServer::queueNewPlots() {
  *                 then a series of drone plot points
  *
  **********************************************************************************************/
+//We're trying to correct our recorded data. The problem is that each server has a bad/offset clock, so we end up with a bunch of slightly offset data points.
+      //E.g. a drone at a certain position at a certain time is recorded as being in that position two seperate times because the
+      //two nodes that detected it are offset.
+
+      //So we're not allowed to synchronize clocks directly to ensure our database data is consistent- ideally, we'd have
+      //a "sync clock" command that runs between the servers so they can dynamically adjust their offset. But we can't.
+
+      //HOWEVER, the replication currently works great- the data on any server is the same as on 
+      //EVERY server. What we can do instead is validate our database when we add our plots- since this operation is deterministic
+      //and operating on the same data, the results will be the same on all servers.
+
+      //One approach could be to do the validation at the very end- clean and simple, but probably not in the spirit of the assignment?
+      //Servers are going to be replicating "bad" data which only gets "fixed" at the very end.
+
+      //Another approach would be to validate the local DB after we're done taking in data. Also works, but this is going to be slow-
+      //comparing every item in the DB to every other item in the DB- O(n^2) and slow. 
+
+      //Instead, we can compare our incoming entries to the local DB, so we're comparing a smaller number. If we take the latest time to be the truth, then
+      //we'll still get the same result.
 
 void ReplServer::addReplDronePlots(std::vector<uint8_t> &data) {
    if (data.size() < 4) {
@@ -198,12 +218,54 @@ void ReplServer::addReplDronePlots(std::vector<uint8_t> &data) {
    std::vector<uint8_t> plot;
    auto dptr = data.begin() + sizeof(unsigned int);
 
-   for (unsigned int i=0; i<count; i++) {
+   //For each of our new drone plots,
+   for (unsigned int i=0; i<count; i++)
+   {
+      //plot.clear();
+      //plot.assign(dptr, dptr + DronePlot::getDataSize());
+      // addSingleDronePlot(plot);
+      // dptr += DronePlot::getDataSize();      
+
+      //Convert to a data structure we can use
       plot.clear();
       plot.assign(dptr, dptr + DronePlot::getDataSize());
+      DronePlot IncomingPlot;
+      IncomingPlot.deserialize(plot);
+
+      //Compare our incoming data plot to each item (X) in the local DB
+      for (auto x : _plotdb)
+      {
+         //If both plots have the same drone at the same location at different times, we have a conflict.
+         if((x.drone_id == IncomingPlot.drone_id) && (x.latitude == IncomingPlot.latitude) && (x.longitude == IncomingPlot.longitude) && (x.node_id != IncomingPlot.node_id) && (x.timestamp != IncomingPlot.timestamp)) //*breathe*
+         {
+
+            //Check difference between incoming and existing time- if it's greater than the maximum deviation, we assume these are two different plots and we ignore the conflict.
+            if(std::abs(x.timestamp - IncomingPlot.timestamp) > _max_clock_deviation)
+            {
+               continue;
+            }
+            if(_verbosity >=3) std::cout << "Found conflict for Drone " << IncomingPlot.drone_id << " at location [" << IncomingPlot.latitude << ", " << IncomingPlot.longitude << "] for timestamps X:" << x.timestamp << " and I: " << IncomingPlot.timestamp << ".\n"; 
+            //If our incoming plot has a later timestamp...
+            if(IncomingPlot.timestamp > x.timestamp)
+            {  
+               //... use that time instead and update the existing entry.
+               if(_verbosity >= 3) std::cout << "Using later timestamp " << IncomingPlot.timestamp << " (new).\n";
+               x.timestamp = IncomingPlot.timestamp;
+            }
+            else //Otherwise, X's time stamp is later than our existing timestamp- let's use that instead.
+            {
+               if(_verbosity >= 3) std::cout << "Using later timestamp " << IncomingPlot.timestamp << " (existing).\n";
+               IncomingPlot.timestamp = x.timestamp;
+            }
+         }
+      }
+
+      //Add our new entry to the database.
+      IncomingPlot.serialize(plot); //seems ridiculous to serialize if we're going to immediateley deserialize, but that's what we're working with (and I don't want to break anything)
       addSingleDronePlot(plot);
-      dptr += DronePlot::getDataSize();      
+      dptr += DronePlot::getDataSize();  
    }
+
    if (_verbosity >= 2)
       std::cout << "Replicated in " << count << " plots\n";   
 }
@@ -218,12 +280,12 @@ void ReplServer::addSingleDronePlot(std::vector<uint8_t> &data) {
    DronePlot tmp_plot;
 
    tmp_plot.deserialize(data);
-
    _plotdb.addPlot(tmp_plot.drone_id, tmp_plot.node_id, tmp_plot.timestamp, tmp_plot.latitude,
                                                          tmp_plot.longitude);
 }
 
 
 void ReplServer::shutdown() {
+
    _shutdown = true;
 }
